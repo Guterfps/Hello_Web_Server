@@ -1,10 +1,11 @@
 
 use std::{
     fs,
-    io::{prelude::*, BufReader},
+    io::{self, prelude::*, BufReader},
     net::{TcpListener, TcpStream}, 
     thread,
     time::Duration,
+    sync::{Arc, atomic::{AtomicBool, Ordering}},
 };
 
 use hello::ThreadPool;
@@ -14,13 +15,33 @@ const IP_ADDR: &str = "127.0.0.1:7878";
 fn main() {
     let listener = TcpListener::bind(IP_ADDR).unwrap();
     let pool = ThreadPool::build(8).unwrap();
+    let exit = Arc::new(AtomicBool::new(false)); 
+    let exit_clone = Arc::clone(&exit);
 
-    for stream in listener.incoming().take(2) {
+    pool.execute(move || {
+        let quit = "quit";
+        let mut input = String::from("");
+        let stdin = io::stdin();
+
+        println!("Enter 'quit' to shutdown the server");
+
+        while quit != input {
+            input = stdin.lock().lines().next().unwrap().unwrap();
+        }
+
+        exit_clone.store(true, Ordering::Relaxed);
+    });
+
+    for stream in listener.incoming() {
         let stream = stream.unwrap();
 
         pool.execute(|| {
             handle_connection(stream);
         });
+
+        if exit.load(Ordering::Relaxed) {
+            break;
+        }
     }
 }
 
