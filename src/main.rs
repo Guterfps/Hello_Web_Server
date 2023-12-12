@@ -15,7 +15,7 @@ fn main() {
     let listener = TcpListener::bind(IP_ADDR).unwrap();
     let pool = ThreadPool::build(8).unwrap();
 
-    for stream in listener.incoming() {
+    for stream in listener.incoming().take(2) {
         let stream = stream.unwrap();
 
         pool.execute(|| {

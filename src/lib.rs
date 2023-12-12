@@ -2,12 +2,12 @@
 use std::{
     thread, 
     io, 
-    sync::{mpsc::{self, Receiver}, Arc, Mutex},
+    sync::{mpsc::{self}, Arc, Mutex},
 };
 
 pub struct ThreadPool {
     workers: Vec<Worker>,
-    sender: mpsc::Sender<Job>,
+    sender: Option<mpsc::Sender<Job>>,
 }
 
 #[derive(Debug)]
@@ -25,7 +25,8 @@ impl ThreadPool {
     /// 
     /// # Errors
     /// 
-    /// The `build` function will return a PoolCreationError if the `size` is zero.
+    /// The `build` function will return a PoolCreationError if the `size` is zero,
+    /// or if the OS fails to create the threads.
     pub fn build(size: usize) -> Result<ThreadPool, PoolCreationError> {
         if size == 0 {
         return Err(PoolCreationError::
@@ -49,35 +50,60 @@ impl ThreadPool {
             workers.push(worker);
         }
         
-        Ok(ThreadPool { workers, sender })
+        Ok(ThreadPool { workers, sender: Some(sender) })
     }
-        
+    
+    /// adds a job to the ThreadPool.
+    /// 
+    /// The `f` is the job to add.
     pub fn execute<F>(&self, f: F)
     where
     F: FnOnce() + Send + 'static,
     {
         let job = Box::new(f);
 
-        self.sender.send(job).unwrap();   
+        self.sender.as_ref().unwrap().send(job).unwrap();   
+    }
+}
+
+impl Drop for ThreadPool {
+    fn drop(&mut self) {
+        drop(self.sender.take());
+
+        for worker in &mut self.workers {
+            println!("Shuting down worker {}", worker.id);
+            
+            if let Some(thread) = worker.thread.take() {
+                thread.join().unwrap();
+            }
+        }
     }
 }
     
 struct Worker {
     id: usize,
-    thread: thread::JoinHandle<()>,
+    thread: Option<thread::JoinHandle<()>>,
 }
 
 impl Worker {
-    pub fn new(id: usize, 
-            receiver: Arc<Mutex<mpsc::Receiver<Job>>>) -> Result<Worker, io::Error> {
+    fn new(id: usize, receiver: Arc<Mutex<mpsc::Receiver<Job>>>) 
+        -> Result<Worker, io::Error> {
         let builder = thread::Builder::new();
-        let thread = builder.spawn(move || loop {
-            let job = receiver.lock().unwrap().recv().unwrap();    
+        let thread = Some(builder.spawn(move || loop {
+            let msg = receiver.lock().unwrap().recv();    
 
-            println!("Worker {id} got a job, executing..");
-
-            job();
-        })?;
+            match msg {
+                Ok(job) => {
+                    println!("Worker {id} got a job, executing..");
+        
+                    job();
+                }
+                Err(_) => {
+                    println!("Worker {id} disconnected, shuting down.");
+                    break;
+                }
+            }
+        })?);
 
         Ok(Worker { id, thread})
     }
